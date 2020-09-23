@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.Scanner;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -64,6 +65,9 @@ public class DataController {
 	/* Do not forget to update DOC_TIME, when changing this */
 	private static final String DATETIME_FORMAT_PATTERN = "yyyy-MM-dd['T'[HH][:mm][:ss][.SSS]][Z][z]";
 
+	@Value("${ninja.url}")
+	private String ninjaBaseUrl;
+
 	public static enum ErrorCode implements ErrorCodeInterface {
 		WRONG_REPRESENTATION("Please choose 'flat' or 'tree' as representation. '%s' is not allowed."),
 		DATE_PARSE_ERROR(
@@ -86,7 +90,7 @@ public class DataController {
 	private static final String DEFAULT_SHOWNULL = "false";
 	private static final String DEFAULT_DISTINCT = "true";
 
-	private static final List<String> TREE_PARTIAL = new ArrayList<String>() {
+	private static final List<String> TREE_STATIONS = new ArrayList<String>() {
 		private static final long serialVersionUID = -1699134802805589710L;
 		{
 			add("_stationtype");
@@ -94,10 +98,18 @@ public class DataController {
 		}
 	};
 
-	private static final List<String> TREE_FULL = new ArrayList<String>() {
-		private static final long serialVersionUID = -1699134802805589710L;
+	private static final List<String> TREE_DATATYPE = new ArrayList<String>() {
+		private static final long serialVersionUID = 5080748129639971674L;
 		{
-			addAll(TREE_PARTIAL);
+			addAll(TREE_STATIONS);
+			add("_datatypename");
+		}
+	};
+
+	private static final List<String> TREE_FULL = new ArrayList<String>() {
+		private static final long serialVersionUID = 39536715440489931L;
+		{
+			addAll(TREE_DATATYPE);
 			add("_datatypename");
 		}
 	};
@@ -124,9 +136,15 @@ public class DataController {
 	DataFetcher dataFetcher;
 
 	@GetMapping(value = "", produces = "application/json")
-	public @ResponseBody String requestStationTypes() {
-		return new DataFetcher().fetchStationTypes();
+	public @ResponseBody String requestRoot() {
+		ClassLoader classloader = Thread.currentThread().getContextClassLoader();
+		InputStream in = classloader.getResourceAsStream("root.json");
+		try (Scanner scanner = new Scanner(in, StandardCharsets.UTF_8.name())) {
+			String result = scanner.useDelimiter("\\A").next();
+			return result.replaceAll("__URL__", ninjaBaseUrl);
+		}
 	}
+
 
 	@GetMapping(value = "/apispec", produces = "application/yaml")
 	public @ResponseBody String requestOpenApiSpec() {
@@ -135,6 +153,27 @@ public class DataController {
 		try (Scanner scanner = new Scanner(in, StandardCharsets.UTF_8.name())) {
 			return scanner.useDelimiter("\\A").next();
 		}
+	}
+
+	@GetMapping(value = "/{representation}", produces = "application/json")
+	public @ResponseBody String requestStationTypes(@PathVariable final String representation) {
+		final List<Map<String, Object>> queryResult =  new DataFetcher().fetchStationTypes();
+		String url = ninjaBaseUrl + "/" + representation + "/";
+		for (Map<String, Object> row : queryResult) {
+			row.put("description", null);
+			if (isFlatRepresentation(representation)) {
+				row.put("self.stations", url + row.get("id"));
+				row.put("self.stations+datatypes", url + row.get("id") + "/*");
+				row.put("self.stations+datatypes+measurements", url + row.get("id") + "/*/latest");
+			} else {
+				Map<String, Object> selfies = new HashMap<String, Object>();
+				selfies.put("stations", url + row.get("id"));
+				selfies.put("stations+datatypes", url + row.get("id") + "/*");
+				selfies.put("stations+datatypes+measurements", url + row.get("id") + "/*/latest");
+				row.put("self", selfies);
+			}
+		}
+		return DataFetcher.serializeJSON(queryResult);
 	}
 
 	@GetMapping(value = "/{representation}/{stationTypes}", produces = "application/json")
@@ -156,12 +195,39 @@ public class DataController {
 		dataFetcher.setSelect(select);
 		dataFetcher.setDistinct(distinct);
 		final List<Map<String, Object>> queryResult = dataFetcher.fetchStations(stationTypes, flat);
-		final Map<String, Object> result = buildResult(queryResult, offset, limit, flat, showNull, TREE_PARTIAL);
+		final Map<String, Object> result = buildResult(queryResult, offset, limit, flat, showNull, TREE_STATIONS);
 		return DataFetcher.serializeJSON(result);
 	}
 
 	@GetMapping(value = "/{representation}/{stationTypes}/{dataTypes}", produces = "application/json")
 	public @ResponseBody String requestDataTypes(@PathVariable final String representation,
+			@PathVariable final String stationTypes, @PathVariable final String dataTypes,
+			@RequestParam(value = "limit", required = false, defaultValue = DEFAULT_LIMIT) final Long limit,
+			@RequestParam(value = "offset", required = false, defaultValue = DEFAULT_OFFSET) final Long offset,
+			@RequestParam(value = "select", required = false) final String select,
+			@RequestParam(value = "where", required = false) final String where,
+			@RequestParam(value = "shownull", required = false, defaultValue = DEFAULT_SHOWNULL) final Boolean showNull,
+			@RequestParam(value = "distinct", required = false, defaultValue = DEFAULT_DISTINCT) final Boolean distinct) {
+
+		final boolean flat = isFlatRepresentation(representation);
+
+		final Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+
+		dataFetcher.setIgnoreNull(!showNull);
+		dataFetcher.setLimit(limit);
+		dataFetcher.setOffset(offset);
+		dataFetcher.setWhere(where);
+		dataFetcher.setSelect(select);
+		dataFetcher.setRoles(SecurityUtils.getRolesFromAuthentication(auth));
+		dataFetcher.setDistinct(distinct);
+
+		final List<Map<String, Object>> queryResult = dataFetcher.fetchStationsAndTypes(stationTypes, dataTypes, flat);
+		final Map<String, Object> result = buildResult(queryResult, offset, limit, flat, showNull, TREE_DATATYPE);
+		return DataFetcher.serializeJSON(result);
+	}
+
+	@GetMapping(value = "/{representation}/{stationTypes}/{dataTypes}/latest", produces = "application/json")
+	public @ResponseBody String requestMostRecent(@PathVariable final String representation,
 			@PathVariable final String stationTypes, @PathVariable final String dataTypes,
 			@RequestParam(value = "limit", required = false, defaultValue = DEFAULT_LIMIT) final Long limit,
 			@RequestParam(value = "offset", required = false, defaultValue = DEFAULT_OFFSET) final Long offset,

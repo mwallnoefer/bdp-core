@@ -20,15 +20,16 @@ public class QueryBuilder {
 	private static SelectExpansion se;
 	private Map<String, Object> parameters = new HashMap<String, Object>();
 
-	public QueryBuilder(final String select, final String where, String... selectDefNames) {
+	public QueryBuilder(final String select, final String where, final boolean isDistinct, String... selectDefNames) {
 		if (QueryBuilder.se == null) {
 			throw new RuntimeException("Missing Select Expansion. Run QueryBuilder.setup before initialization.");
 		}
-		reset(select, where, selectDefNames);
+		reset(select, where, isDistinct, selectDefNames);
 	}
 
-	public QueryBuilder reset(final String select, final String where, String... selectDefNames) {
+	public QueryBuilder reset(final String select, final String where, final boolean isDistinct, String... selectDefNames) {
 		se.setWhereClause(where);
+		se.setDistinct(isDistinct);
 		se.expand(select, selectDefNames);
 		return this;
 	}
@@ -50,13 +51,13 @@ public class QueryBuilder {
 		QueryBuilder.se = selectExpansion;
 	}
 
-	public static QueryBuilder init(final String select, final String where, String... selectDefNames) {
-		return new QueryBuilder(select, where, selectDefNames);
+	public static QueryBuilder init(final String select, final String where, final boolean isDistinct, String... selectDefNames) {
+		return new QueryBuilder(select, where, isDistinct, selectDefNames);
 	}
 
-	public static QueryBuilder init(SelectExpansion selectExpansion, final String select, final String where, String... selectDefNames) {
+	public static QueryBuilder init(SelectExpansion selectExpansion, final String select, final String where, final boolean isDistinct, String... selectDefNames) {
 		QueryBuilder.setup(selectExpansion);
-		return QueryBuilder.init(select, where, selectDefNames);
+		return QueryBuilder.init(select, where, isDistinct, selectDefNames);
 	}
 
 	/**
@@ -275,15 +276,25 @@ public class QueryBuilder {
 	}
 
 	public QueryBuilder expandGroupBy() {
+		return expandGroupByIf(null, true);
+	}
+
+	public QueryBuilder expandGroupByIf(final String optionalGroupings, boolean condition) {
 		if (! se.hasFunctions()) {
 			return this;
 		}
+		StringJoiner sj = new StringJoiner(", ");
 		List<String> groupByTargetNames = se.getGroupByTargetNames();
 		if (! groupByTargetNames.isEmpty()) {
-			StringJoiner sj = new StringJoiner(", ");
 			for (String targetName : groupByTargetNames) {
-				sj.add(se.getSchema().find(targetName).get(targetName).getColumn());
+				TargetDef targetDef = se.getSchema().getTargetDefs(targetName).get(0);
+				sj.add(targetDef.getColumn());
 			}
+		}
+		if (optionalGroupings != null && condition) {
+			sj.add(optionalGroupings);
+		}
+		if (sj.length() > 0) {
 			addSql("group by " + sj);
 		}
 		return this;
